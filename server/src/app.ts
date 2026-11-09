@@ -628,16 +628,171 @@ export function buildApp() {
 
   /* ---------------- Customers ---------------- */
   app.post("/api/customers", requireAuth(), wrap(async (req, res) => {
-    const b = z.object({ customerName: z.string().min(2), phone: z.string().regex(/^\+?\d{10,14}$/), creditLimit: z.number().nonnegative().default(0) }).parse(req.body);
+    const b = z.object({
+      customerName: z.string().trim().min(2).max(120), phone: z.string().regex(/^\+?\d{10,14}$/),
+      email: z.union([z.string().email().max(120), z.literal("")]).optional(), address: z.string().max(255).optional(),
+      notes: z.string().max(5000).optional(), tags: z.array(z.string().trim().min(1).max(24)).max(12).optional(),
+      creditLimit: z.number().nonnegative().default(0),
+    }).parse(req.body);
     const a = req.auth!;
-    const r = await withTenant(a.businessId, (c) => c.query(`INSERT INTO customers (business_id,customer_name,phone,credit_limit) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [a.businessId, b.customerName, b.phone, b.creditLimit]));
+    const r = await withTenant(a.businessId, (c) => c.query(`INSERT INTO customers
+      (business_id,customer_name,phone,email,address,notes,tags,credit_limit)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [a.businessId, b.customerName, b.phone, b.email || null, b.address ?? null, b.notes ?? "", b.tags ?? [], b.creditLimit]));
     res.status(201).json(r.rows[0]);
   }));
   app.get("/api/customers", requireAuth(), wrap(async (req, res) => {
     const a = req.auth!;
-    const r = await withTenant(a.businessId, (c) => c.query(`SELECT customer_id, customer_name, phone, credit_limit::float, outstanding_balance::float FROM customers ORDER BY customer_name`));
+    const r = await withTenant(a.businessId, (c) => c.query(`SELECT c.customer_id, c.customer_name, c.phone, c.email, c.address,
+      c.notes, c.tags, c.credit_limit::float, c.outstanding_balance::float,
+      COALESCE(s.orders_count,0)::int AS orders_count, COALESCE(s.lifetime_value,0)::float AS lifetime_value,
+      s.last_purchase_at, COALESCE(i.interaction_count,0)::int AS interaction_count
+      FROM customers c
+      LEFT JOIN LATERAL (SELECT COUNT(*) AS orders_count, SUM(grand_total) AS lifetime_value, MAX(created_at) AS last_purchase_at
+        FROM sales WHERE customer_id = c.customer_id) s ON TRUE
+      LEFT JOIN LATERAL (SELECT COUNT(*) AS interaction_count FROM customer_interactions WHERE customer_id = c.customer_id) i ON TRUE
+      ORDER BY c.customer_name`));
     res.json(r.rows);
+  }));
+  app.get("/api/customers/:id", requireAuth(), wrap(async (req, res) => {
+    const a = req.auth!;
+    const customer = await withTenant(a.businessId, async (c) => {
+      const current = await c.query(`SELECT customer_id,customer_name,phone,email,address,notes,tags,
+        credit_limit::float,outstanding_balance::float,created_at FROM customers WHERE customer_id = $1`, [req.params.id]);
+      if (!current.rowCount) throw new HttpError(404, "Customer not found");
+      const sales = await c.query(`SELECT sale_id,invoice_no,grand_total::float,amount_paid::float,payment_status,created_at
+        FROM sales WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 50`, [req.params.id]);
+      const interactions = await c.query(`SELECT i.interaction_id,i.interaction_type,i.subject,i.notes,i.follow_up_at,i.created_at,
+        u.full_name AS created_by FROM customer_interactions i LEFT JOIN users u ON u.user_id = i.user_id
+        WHERE i.customer_id = $1 ORDER BY i.created_at DESC LIMIT 50`, [req.params.id]);
+      return { customer: current.rows[0], sales: sales.rows, interactions: interactions.rows };
+    });
+    res.json(customer);
+  }));
+  app.put("/api/customers/:id", requireAuth(), wrap(async (req, res) => {
+    const b = z.object({
+      customerName: z.string().trim().min(2).max(120).optional(),
+      phone: z.union([z.string().regex(/^\+?\d{10,14}$/), z.literal("")]).optional(),
+      email: z.union([z.string().email().max(120), z.literal("")]).optional(),
+      address: z.string().max(255).optional(), notes: z.string().max(5000).optional(),
+      tags: z.array(z.string().trim().min(1).max(24)).max(12).optional(), creditLimit: z.number().nonnegative().optional(),
+    }).refine((value) => Object.keys(value).length > 0, "Provide at least one field to update").parse(req.body);
+    const a = req.auth!;
+    const customer = await withTenant(a.businessId, async (c) => {
+      const current = await c.query("SELECT * FROM customers WHERE customer_id = $1 FOR UPDATE", [req.params.id]);
+      if (!current.rowCount) throw new HttpError(404, "Customer not found");
+      const existing = current.rows[0];
+      const updated = await c.query(`UPDATE customers SET customer_name = $2, phone = $3, email = $4, address = $5,
+        notes = $6, tags = $7, credit_limit = $8 WHERE customer_id = $1
+        RETURNING customer_id,customer_name,phone,email,address,notes,tags,credit_limit::float,outstanding_balance::float`, [
+        existing.customer_id, b.customerName ?? existing.customer_name,
+        b.phone === undefined ? existing.phone : b.phone || null,
+        b.email === undefined ? existing.email : b.email || null,
+        b.address ?? existing.address, b.notes ?? existing.notes, b.tags ?? existing.tags,
+        b.creditLimit ?? existing.credit_limit,
+      ]);
+      return updated.rows[0];
+    });
+    res.json(customer);
+  }));
+  app.post("/api/customers/:id/interactions", requireAuth(), wrap(async (req, res) => {
+    const b = z.object({
+      interactionType: z.enum(["CALL", "EMAIL", "MEETING", "NOTE"]),
+      subject: z.string().trim().min(2).max(120), notes: z.string().max(3000).optional(),
+      followUpAt: z.union([z.string().datetime(), z.literal(""), z.null()]).optional(),
+    }).parse(req.body);
+    const a = req.auth!;
+    const interaction = await withTenant(a.businessId, async (c) => {
+      const customer = await c.query("SELECT 1 FROM customers WHERE customer_id = $1", [req.params.id]);
+      if (!customer.rowCount) throw new HttpError(404, "Customer not found");
+      const created = await c.query(`INSERT INTO customer_interactions
+        (business_id,customer_id,user_id,interaction_type,subject,notes,follow_up_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [a.businessId, req.params.id, a.userId, b.interactionType, b.subject, b.notes ?? "", b.followUpAt || null]);
+      return created.rows[0];
+    });
+    res.status(201).json(interaction);
+  }));
+
+  /* ---------------- Customer complaints ---------------- */
+  app.get("/api/complaints", requireAuth(), wrap(async (req, res) => {
+    const status = typeof req.query.status === "string" ? req.query.status.toUpperCase() : "";
+    const priority = typeof req.query.priority === "string" ? req.query.priority.toUpperCase() : "";
+    if (status && !["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"].includes(status)) throw new HttpError(422, "Invalid complaint status");
+    if (priority && !["LOW", "NORMAL", "HIGH", "URGENT"].includes(priority)) throw new HttpError(422, "Invalid complaint priority");
+    const a = req.auth!;
+    const complaints = await withTenant(a.businessId, (c) => c.query(`SELECT cc.*,cu.customer_name,cu.phone AS customer_phone,
+      s.invoice_no,assignee.full_name AS assigned_name,creator.full_name AS created_by_name
+      FROM customer_complaints cc JOIN customers cu ON cu.customer_id = cc.customer_id
+      LEFT JOIN sales s ON s.sale_id = cc.sale_id
+      LEFT JOIN users assignee ON assignee.user_id = cc.assigned_to
+      LEFT JOIN users creator ON creator.user_id = cc.created_by
+      WHERE ($1 = '' OR cc.status = $1) AND ($2 = '' OR cc.priority = $2)
+      ORDER BY CASE cc.priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'NORMAL' THEN 2 ELSE 3 END,
+        cc.created_at DESC`, [status, priority]));
+    res.json(complaints.rows);
+  }));
+  app.post("/api/complaints", requireAuth(), wrap(async (req, res) => {
+    const b = z.object({
+      customerId: z.string().uuid(), saleId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(),
+      category: z.enum(["PRODUCT", "PAYMENT", "DELIVERY", "SERVICE", "OTHER"]),
+      subject: z.string().trim().min(3).max(160), description: z.string().trim().min(5).max(5000),
+      priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).default("NORMAL"),
+      assignedTo: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(),
+    }).parse(req.body);
+    const a = req.auth!;
+    const complaint = await withTenant(a.businessId, async (c) => {
+      const customer = await c.query("SELECT 1 FROM customers WHERE customer_id = $1", [b.customerId]);
+      if (!customer.rowCount) throw new HttpError(404, "Customer not found");
+      if (b.saleId) {
+        const sale = await c.query("SELECT 1 FROM sales WHERE sale_id = $1 AND customer_id = $2", [b.saleId, b.customerId]);
+        if (!sale.rowCount) throw new HttpError(422, "Sale does not belong to this customer");
+      }
+      const assignedTo = b.assignedTo || null;
+      if (assignedTo) {
+        if (!["OWNER", "ADMIN"].includes(a.role)) throw new HttpError(403, "Only owners and administrators can assign complaints");
+        const assignee = await c.query("SELECT 1 FROM users WHERE user_id = $1 AND is_active", [assignedTo]);
+        if (!assignee.rowCount) throw new HttpError(422, "Assigned team member is unavailable");
+      }
+      const created = await c.query(`INSERT INTO customer_complaints
+        (business_id,customer_id,sale_id,created_by,assigned_to,category,subject,description,priority)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [a.businessId, b.customerId, b.saleId || null, a.userId, assignedTo, b.category, b.subject, b.description, b.priority]);
+      return created.rows[0];
+    });
+    res.status(201).json(complaint);
+  }));
+  app.put("/api/complaints/:id", requireAuth(), wrap(async (req, res) => {
+    const b = z.object({
+      status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
+      priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
+      assignedTo: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(),
+      resolution: z.string().max(5000).optional(),
+    }).refine((value) => Object.keys(value).length > 0, "Provide at least one field to update").parse(req.body);
+    const a = req.auth!;
+    const complaint = await withTenant(a.businessId, async (c) => {
+      const current = await c.query("SELECT * FROM customer_complaints WHERE complaint_id = $1 FOR UPDATE", [req.params.id]);
+      if (!current.rowCount) throw new HttpError(404, "Complaint not found");
+      const existing = current.rows[0];
+      if (b.assignedTo !== undefined && !["OWNER", "ADMIN"].includes(a.role)) {
+        throw new HttpError(403, "Only owners and administrators can assign complaints");
+      }
+      const assignedTo = b.assignedTo === undefined ? existing.assigned_to : b.assignedTo || null;
+      if (assignedTo) {
+        const assignee = await c.query("SELECT 1 FROM users WHERE user_id = $1 AND is_active", [assignedTo]);
+        if (!assignee.rowCount) throw new HttpError(422, "Assigned team member is unavailable");
+      }
+      const status = b.status ?? existing.status;
+      const updated = await c.query(`UPDATE customer_complaints SET status = $2, priority = $3, assigned_to = $4,
+        resolution = $5, updated_at = now(),
+        resolved_at = CASE WHEN $6 THEN COALESCE(resolved_at,now()) ELSE NULL END
+        WHERE complaint_id = $1 RETURNING *`, [
+        existing.complaint_id, status, b.priority ?? existing.priority, assignedTo, b.resolution ?? existing.resolution,
+        ["RESOLVED", "CLOSED"].includes(status),
+      ]);
+      return updated.rows[0];
+    });
+    res.json(complaint);
   }));
 
   /* ---------------- Reports ---------------- */

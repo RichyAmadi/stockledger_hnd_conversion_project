@@ -4,7 +4,7 @@ import { migrateDatabase } from "./migrate";
 const port = Number(process.env.PORT ?? 4000);
 
 async function start() {
-	await migrateDatabase();
+	if (process.env.NODE_ENV === "production" || process.env.RUN_MIGRATIONS === "true") await migrateDatabase();
 	buildApp().listen(port, () => console.log(`API listening on :${port}`));
 }
 

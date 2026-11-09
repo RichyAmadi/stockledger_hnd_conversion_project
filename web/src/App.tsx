@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { api, setToken, clearToken, hasToken, naira, ddmmyyyy, queueSale, pendingCount, syncQueue } from "./api";
 
-type Page = "dashboard" | "pos" | "inventory" | "purchasing" | "sales" | "customers" | "reports" | "insights" | "plans" | "team" | "admin" | "profile";
+type Page = "dashboard" | "pos" | "inventory" | "purchasing" | "sales" | "customers" | "complaints" | "reports" | "insights" | "plans" | "team" | "admin" | "profile";
 
 export default function App() {
   const [me, setMe] = useState<any>(null);
@@ -44,8 +44,8 @@ export default function App() {
   const planName = String(me.business?.plan_name ?? "").toLowerCase();
   const hasAnalytics = !me.business?.subscription_expired && (planName === "trial" || planName === "standard" || planName === "premium");
   const canManageInventory = ["OWNER", "ADMIN", "INVENTORY_MANAGER"].includes(me.role);
-  const nav: [Page, string][] = [["dashboard", "Overview"], ["pos", "Point of sale"], ["inventory", "Inventory"], ...(canManageInventory ? [["purchasing", "Purchasing"] as [Page, string]] : []), ["sales", "Sales"], ["customers", "Customers"], ...(hasAnalytics ? [["reports", "Reports"] as [Page, string]] : []), ...(hasAnalytics && planName === "premium" && ["OWNER", "ADMIN"].includes(me.role) ? [["insights", "Smart insights"] as [Page, string]] : []), ["profile", "My profile"]];
-  const titles: Record<Page, string> = { dashboard: "Overview", pos: "Point of sale", inventory: "Inventory", purchasing: "Purchasing", sales: "Sales", customers: "Customers", reports: "Reports", insights: "Smart insights", plans: "Plans and billing", team: "Team management", admin: "System administration", profile: "My profile" };
+  const nav: [Page, string][] = [["dashboard", "Overview"], ["pos", "Point of sale"], ["inventory", "Inventory"], ...(canManageInventory ? [["purchasing", "Purchasing"] as [Page, string]] : []), ["sales", "Sales"], ["customers", "CRM"], ["complaints", "Complaints"], ...(hasAnalytics ? [["reports", "Reports"] as [Page, string]] : []), ...(hasAnalytics && planName === "premium" && ["OWNER", "ADMIN"].includes(me.role) ? [["insights", "Smart insights"] as [Page, string]] : []), ["profile", "My profile"]];
+  const titles: Record<Page, string> = { dashboard: "Overview", pos: "Point of sale", inventory: "Inventory", purchasing: "Purchasing", sales: "Sales", customers: "CRM", complaints: "Complaints", reports: "Reports", insights: "Smart insights", plans: "Plans and billing", team: "Team management", admin: "System administration", profile: "My profile" };
   return (
     <div className="shell">
       <aside>
@@ -56,7 +56,7 @@ export default function App() {
           <div className="nav-label">WORKSPACE</div>
           <nav className="nav-list">
             {nav.filter(([p]) => !["reports", "insights"].includes(p) || ["OWNER", "ADMIN"].includes(me.role)).map(([p, l]) =>
-              <button key={p} className={page === p ? "on" : ""} onClick={() => setPage(p)}><span className="nav-icon">{({ dashboard: "◫", pos: "＋", inventory: "▤", purchasing: "⇄", sales: "↗", customers: "♙", reports: "▥", insights: "✧", profile: "●" } as Record<string, string>)[p]}</span>{l}</button>)}
+              <button key={p} className={page === p ? "on" : ""} onClick={() => setPage(p)}><span className="nav-icon">{({ dashboard: "◫", pos: "＋", inventory: "▤", purchasing: "⇄", sales: "↗", customers: "♙", complaints: "!", reports: "▥", insights: "✧", profile: "●" } as Record<string, string>)[p]}</span>{l}</button>)}
           </nav>
           {["OWNER", "ADMIN"].includes(me.role) && <><div className="nav-label admin-label">ADMINISTRATION</div><nav className="nav-list">
             <button className={page === "team" ? "on" : ""} onClick={() => setPage("team")}><span className="nav-icon">♧</span>Team management</button>
@@ -83,7 +83,8 @@ export default function App() {
         {page === "inventory" && <Inventory me={me} toast={setToast} />}
         {page === "purchasing" && canManageInventory && <Purchasing toast={setToast} />}
         {page === "sales" && <Sales />}
-        {page === "customers" && <Customers toast={setToast} />}
+        {page === "customers" && <CRM toast={setToast} />}
+        {page === "complaints" && <Complaints me={me} toast={setToast} />}
         {page === "reports" && <Reports />}
         {page === "insights" && ["OWNER", "ADMIN"].includes(me.role) && <Insights />}
         {page === "plans" && me.role === "OWNER" && <Plans me={me} onSaved={loadMe} toast={setToast} />}
@@ -737,33 +738,167 @@ function Sales() {
   </>;
 }
 
-function Customers({ toast }: { toast: (s: string) => void }) {
+function CRM({ toast }: { toast: (s: string) => void }) {
+  const blank = () => ({ customerName: "", phone: "", email: "", address: "", creditLimit: "0", tags: "", notes: "" });
   const [rows, setRows] = useState<any[]>([]);
+  const [form, setForm] = useState(blank());
+  const [detailForm, setDetailForm] = useState<any>(null);
+  const [detail, setDetail] = useState<any>(null);
+  const [interaction, setInteraction] = useState({ interactionType: "NOTE", subject: "", notes: "", followUpAt: "" });
+  const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ customerName: "", phone: "", creditLimit: "0" });
   const [error, setError] = useState("");
-  const load = () => api("/customers").then(setRows).catch((e) => setError(e.message));
+  const load = () => api<any[]>("/customers").then(setRows).catch((e) => setError(e.message));
+  const loadDetail = async (id: string) => {
+    try {
+      const result = await api(`/customers/${id}`);
+      setDetail(result);
+      setDetailForm({ ...result.customer, customerName: result.customer.customer_name, creditLimit: String(result.customer.credit_limit), tags: (result.customer.tags ?? []).join(", ") });
+    } catch (e: any) { setError(e.message); }
+  };
   useEffect(() => { load(); }, []);
+  const filtered = rows.filter((row) => `${row.customer_name} ${row.phone ?? ""} ${row.email ?? ""} ${(row.tags ?? []).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
   const save = async (e: any) => {
     e.preventDefault(); setError("");
     try {
-      await api("/customers", { method: "POST", body: { ...form, creditLimit: Number(form.creditLimit) } });
-      setForm({ customerName: "", phone: "", creditLimit: "0" }); setShowForm(false); await load(); toast("Customer added");
+      await api("/customers", { method: "POST", body: { ...form, creditLimit: Number(form.creditLimit), tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean) } });
+      setForm(blank()); setShowForm(false); await load(); toast("Customer added");
+    } catch (x: any) { setError(x.message); }
+  };
+  const saveProfile = async (e: any) => {
+    e.preventDefault(); setError("");
+    try {
+      await api(`/customers/${detail.customer.customer_id}`, { method: "PUT", body: {
+        customerName: detailForm.customerName, phone: detailForm.phone ?? "", email: detailForm.email ?? "",
+        address: detailForm.address ?? "", creditLimit: Number(detailForm.creditLimit), notes: detailForm.notes ?? "",
+        tags: String(detailForm.tags ?? "").split(",").map((tag: string) => tag.trim()).filter(Boolean),
+      } });
+      await Promise.all([load(), loadDetail(detail.customer.customer_id)]); toast("Customer profile updated");
+    } catch (x: any) { setError(x.message); }
+  };
+  const addInteraction = async (e: any) => {
+    e.preventDefault(); setError("");
+    try {
+      await api(`/customers/${detail.customer.customer_id}/interactions`, { method: "POST", body: {
+        ...interaction, followUpAt: interaction.followUpAt ? new Date(interaction.followUpAt).toISOString() : null,
+      } });
+      setInteraction({ interactionType: "NOTE", subject: "", notes: "", followUpAt: "" });
+      await Promise.all([load(), loadDetail(detail.customer.customer_id)]); toast("Activity logged");
     } catch (x: any) { setError(x.message); }
   };
   return <>
-    <div className="head"><h2>Customers</h2><button className="primary" onClick={() => setShowForm((open) => !open)}>{showForm ? "Cancel" : "＋ Add customer"}</button></div>
+    <div className="head"><div><div className="eyebrow">CUSTOMER RELATIONSHIPS</div><h2>CRM</h2></div><button className="primary" onClick={() => setShowForm((open) => !open)}>{showForm ? "Cancel" : "＋ Add customer"}</button></div>
     {error && <div className="err" role="alert">{error}</div>}
-    {showForm && <form className="card customer-form" onSubmit={save}><div className="section-heading"><div><div className="eyebrow">CUSTOMER DIRECTORY</div><h3>Add a customer</h3></div></div>
-      <div className="customer-form-fields"><label>Customer name<input required minLength={2} maxLength={120} value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></label>
-        <label>Phone number<input required type="tel" pattern="\+?\d{10,14}" title="Enter 10 to 14 digits, optionally prefixed with +" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="08031234567" /></label>
+    <div className="crm-metrics"><div><span>Customers</span><strong>{rows.length}</strong></div><div><span>Lifetime sales</span><strong>{naira(rows.reduce((sum, row) => sum + Number(row.lifetime_value ?? 0), 0))}</strong></div><div><span>Open credit</span><strong>{naira(rows.reduce((sum, row) => sum + Number(row.outstanding_balance ?? 0), 0))}</strong></div><div><span>Follow-ups logged</span><strong>{rows.reduce((sum, row) => sum + Number(row.interaction_count ?? 0), 0)}</strong></div></div>
+    {showForm && <form className="card" onSubmit={save}><div className="section-heading"><div><div className="eyebrow">CUSTOMER DIRECTORY</div><h3>Add a customer</h3></div></div>
+      <div className="crm-form-grid"><label>Customer name<input required minLength={2} maxLength={120} value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></label>
+        <label>Phone<input required type="tel" pattern="\+?\d{10,14}" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="08031234567" /></label>
+        <label>Email<input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
+        <label>Address<input maxLength={255} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></label>
         <label>Credit limit (₦)<input type="number" min="0" step="0.01" value={form.creditLimit} onChange={(e) => setForm({ ...form, creditLimit: e.target.value })} /></label>
+        <label>Tags, separated by commas<input maxLength={300} value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="Wholesale, VIP" /></label>
+        <label className="crm-wide">Notes<textarea maxLength={5000} rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
         <button className="primary">Save customer</button></div></form>}
-    <div className="card"><div className="section-heading"><div><div className="eyebrow">CUSTOMER ACCOUNTS</div><h3>Customers</h3><p className="team-help">Customer balances and available credit update when you record a sale.</p></div><span className="count-badge">{rows.length} customers</span></div>
-      {rows.length ? <div className="table-scroll"><table><thead><tr><th>Name</th><th>Phone</th><th>Credit limit</th><th>Outstanding balance</th><th>Available credit</th></tr></thead><tbody>
-        {rows.map((r) => <tr key={r.customer_id}><td>{r.customer_name}</td><td>{r.phone}</td><td>{naira(r.credit_limit)}</td><td className={r.outstanding_balance > 0 ? "warn" : ""}>{naira(r.outstanding_balance)}</td><td>{naira(Math.max(0, r.credit_limit - r.outstanding_balance))}</td></tr>)}
-      </tbody></table></div> : <div className="empty-state"><b>No customers yet</b><p>Add customer accounts to manage credit sales.</p></div>}
+    <div className="card"><div className="section-heading"><div><div className="eyebrow">CUSTOMER ACCOUNTS</div><h3>Directory</h3><p className="team-help">Purchase history, credit status, and logged customer touchpoints.</p></div><span className="count-badge">{filtered.length} customers</span></div>
+      <div className="crm-toolbar"><input aria-label="Search customers" placeholder="Search name, phone, email, or tag" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+      {filtered.length ? <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Contact</th><th>Orders</th><th>Lifetime sales</th><th>Balance</th><th>Last purchase</th></tr></thead><tbody>
+        {filtered.map((row) => <tr key={row.customer_id} className="click" onClick={() => loadDetail(row.customer_id)}><td><strong>{row.customer_name}</strong><div className="crm-tags">{(row.tags ?? []).map((tag: string) => <span className="crm-tag" key={tag}>{tag}</span>)}</div></td><td>{row.phone || "—"}<div className="muted">{row.email || ""}</div></td><td>{row.orders_count}</td><td>{naira(row.lifetime_value)}</td><td className={row.outstanding_balance > 0 ? "warn" : ""}>{naira(row.outstanding_balance)}</td><td>{row.last_purchase_at ? ddmmyyyy(row.last_purchase_at) : "—"}</td></tr>)}
+      </tbody></table></div> : <div className="empty-state"><b>{rows.length ? "No matching customers" : "No customers yet"}</b><p>Add customer accounts to keep contact and sales history together.</p></div>}
     </div>
+    {detail && detailForm && <div className="modal crm-overlay" onClick={() => setDetail(null)}><section className="crm-modal" role="dialog" aria-modal="true" aria-label={`${detail.customer.customer_name} customer profile`} onClick={(e) => e.stopPropagation()}>
+      <div className="head"><div><div className="eyebrow">CUSTOMER PROFILE</div><h2>{detail.customer.customer_name}</h2></div><button className="link" onClick={() => setDetail(null)}>Close</button></div>
+      <div className="crm-detail-metrics"><div><span>Orders</span><strong>{detail.sales.length}</strong></div><div><span>Lifetime sales</span><strong>{naira(detail.sales.reduce((sum: number, sale: any) => sum + Number(sale.grand_total), 0))}</strong></div><div><span>Outstanding</span><strong>{naira(detail.customer.outstanding_balance)}</strong></div></div>
+      {error && <div className="err" role="alert">{error}</div>}
+      <div className="crm-detail-grid"><form className="crm-section" onSubmit={saveProfile}><div className="section-heading"><div><h3>Contact details</h3></div></div>
+        <label>Name<input required value={detailForm.customerName} onChange={(e) => setDetailForm({ ...detailForm, customerName: e.target.value })} /></label>
+        <label>Phone<input value={detailForm.phone ?? ""} onChange={(e) => setDetailForm({ ...detailForm, phone: e.target.value })} /></label>
+        <label>Email<input type="email" value={detailForm.email ?? ""} onChange={(e) => setDetailForm({ ...detailForm, email: e.target.value })} /></label>
+        <label>Address<input value={detailForm.address ?? ""} onChange={(e) => setDetailForm({ ...detailForm, address: e.target.value })} /></label>
+        <label>Credit limit (₦)<input type="number" min="0" step="0.01" value={detailForm.creditLimit} onChange={(e) => setDetailForm({ ...detailForm, creditLimit: e.target.value })} /></label>
+        <label>Tags<input value={detailForm.tags} onChange={(e) => setDetailForm({ ...detailForm, tags: e.target.value })} /></label>
+        <label>Notes<textarea rows={3} value={detailForm.notes ?? ""} onChange={(e) => setDetailForm({ ...detailForm, notes: e.target.value })} /></label>
+        <button className="primary">Save profile</button>
+      </form><form className="crm-section" onSubmit={addInteraction}><div className="section-heading"><div><h3>Log an interaction</h3><p className="team-help">Calls, emails, meetings, and notes.</p></div></div>
+        <label>Type<select value={interaction.interactionType} onChange={(e) => setInteraction({ ...interaction, interactionType: e.target.value })}><option value="NOTE">Note</option><option value="CALL">Call</option><option value="EMAIL">Email</option><option value="MEETING">Meeting</option></select></label>
+        <label>Subject<input required minLength={2} maxLength={120} value={interaction.subject} onChange={(e) => setInteraction({ ...interaction, subject: e.target.value })} /></label>
+        <label>Notes<textarea rows={3} value={interaction.notes} onChange={(e) => setInteraction({ ...interaction, notes: e.target.value })} /></label>
+        <label>Follow-up<input type="datetime-local" value={interaction.followUpAt} onChange={(e) => setInteraction({ ...interaction, followUpAt: e.target.value })} /></label>
+        <button className="secondary">Log activity</button>
+      </form></div>
+      <div className="crm-detail-grid crm-history-grid"><section className="crm-section"><div className="section-heading"><h3>Recent activity</h3><span className="count-badge">{detail.interactions.length}</span></div>
+        {detail.interactions.length ? <div className="crm-timeline">{detail.interactions.map((item: any) => <article key={item.interaction_id}><div className="crm-timeline-top"><span className="crm-tag">{item.interaction_type}</span><time>{ddmmyyyy(item.created_at)}</time></div><strong>{item.subject}</strong><p>{item.notes || "No notes"}</p>{item.follow_up_at && <small>Follow up {ddmmyyyy(item.follow_up_at)}</small>}<small>Logged by {item.created_by ?? "Team"}</small></article>)}</div> : <div className="empty-state"><b>No activity logged</b><p>Add the first customer touchpoint above.</p></div>}
+      </section><section className="crm-section"><div className="section-heading"><h3>Purchase history</h3><span className="count-badge">{detail.sales.length}</span></div>
+        {detail.sales.length ? <div className="table-scroll"><table><thead><tr><th>Invoice</th><th>Date</th><th>Total</th><th>Payment</th></tr></thead><tbody>{detail.sales.map((sale: any) => <tr key={sale.sale_id}><td>{sale.invoice_no}</td><td>{ddmmyyyy(sale.created_at)}</td><td>{naira(sale.grand_total)}</td><td>{sale.payment_status}</td></tr>)}</tbody></table></div> : <div className="empty-state"><b>No sales recorded</b><p>Completed sales linked to this customer appear here.</p></div>}
+      </section></div>
+    </section></div>}
+  </>;
+}
+
+function Complaints({ me, toast }: { me: any; toast: (s: string) => void }) {
+  const manager = ["OWNER", "ADMIN"].includes(me.role);
+  const [rows, setRows] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [selected, setSelected] = useState<any>(null);
+  const [edit, setEdit] = useState<any>(null);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({ customerId: "", category: "SERVICE", subject: "", description: "", priority: "NORMAL", assignedTo: "" });
+  const load = () => api<any[]>(`/complaints${statusFilter ? `?status=${statusFilter}` : ""}`).then(setRows).catch((e) => setError(e.message));
+  useEffect(() => {
+    api<any[]>("/customers").then((items) => { setCustomers(items); if (items[0]) setForm((current) => ({ ...current, customerId: current.customerId || items[0].customer_id })); }).catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => { if (manager) api<any[]>("/users").then(setUsers).catch((e) => setError(e.message)); }, [manager]);
+  const filtered = rows.filter((row) => `${row.subject} ${row.customer_name} ${row.category} ${row.assigned_name ?? ""}`.toLowerCase().includes(search.toLowerCase()));
+  const openCount = rows.filter((row) => row.status === "OPEN").length;
+  const urgentCount = rows.filter((row) => row.priority === "URGENT" && !["RESOLVED", "CLOSED"].includes(row.status)).length;
+  const create = async (e: any) => {
+    e.preventDefault(); setError("");
+    try {
+      await api("/complaints", { method: "POST", body: { ...form, assignedTo: manager ? form.assignedTo || null : null } });
+      setForm({ customerId: customers[0]?.customer_id ?? "", category: "SERVICE", subject: "", description: "", priority: "NORMAL", assignedTo: "" });
+      setShowForm(false); await load(); toast("Complaint recorded");
+    } catch (x: any) { setError(x.message); }
+  };
+  const openComplaint = (row: any) => { setSelected(row); setEdit({ status: row.status, priority: row.priority, assignedTo: row.assigned_to ?? "", resolution: row.resolution ?? "" }); };
+  const saveComplaint = async (e: any) => {
+    e.preventDefault(); setError("");
+    try {
+      const body: any = { status: edit.status, priority: edit.priority, resolution: edit.resolution };
+      if (manager) body.assignedTo = edit.assignedTo || null;
+      await api(`/complaints/${selected.complaint_id}`, { method: "PUT", body });
+      setSelected(null); await load(); toast("Complaint updated");
+    } catch (x: any) { setError(x.message); }
+  };
+  return <>
+    <div className="head"><div><div className="eyebrow">CUSTOMER SERVICE</div><h2>Complaints</h2></div><button className="primary" onClick={() => setShowForm((open) => !open)}>{showForm ? "Cancel" : "＋ Record complaint"}</button></div>
+    {error && <div className="err" role="alert">{error}</div>}
+    <div className="crm-metrics complaint-metrics"><div><span>All shown</span><strong>{rows.length}</strong></div><div><span>Open</span><strong>{openCount}</strong></div><div><span>Urgent unresolved</span><strong>{urgentCount}</strong></div></div>
+    {showForm && <form className="card" onSubmit={create}><div className="section-heading"><div><div className="eyebrow">CUSTOMER SUPPORT</div><h3>Record a complaint</h3></div></div>
+      <div className="crm-form-grid"><label>Customer<select required value={form.customerId} onChange={(e) => setForm({ ...form, customerId: e.target.value })}><option value="">Select customer</option>{customers.map((customer) => <option key={customer.customer_id} value={customer.customer_id}>{customer.customer_name} · {customer.phone}</option>)}</select></label>
+        <label>Category<select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}><option value="PRODUCT">Product</option><option value="PAYMENT">Payment</option><option value="DELIVERY">Delivery</option><option value="SERVICE">Service</option><option value="OTHER">Other</option></select></label>
+        <label>Priority<select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}><option value="LOW">Low</option><option value="NORMAL">Normal</option><option value="HIGH">High</option><option value="URGENT">Urgent</option></select></label>
+        <label>Subject<input required minLength={3} maxLength={160} value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} /></label>
+        {manager && <label>Assign to<select value={form.assignedTo} onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}><option value="">Unassigned</option>{users.filter((user) => user.is_active).map((user) => <option key={user.user_id} value={user.user_id}>{user.full_name}</option>)}</select></label>}
+        <label className="crm-wide">Description<textarea required minLength={5} maxLength={5000} rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+        <button className="primary" disabled={!customers.length}>Save complaint</button></div></form>}
+    <div className="card"><div className="section-heading"><div><div className="eyebrow">SERVICE QUEUE</div><h3>Complaint records</h3></div><span className="count-badge">{filtered.length} shown</span></div>
+      <div className="crm-toolbar"><input aria-label="Search complaints" placeholder="Search subject, customer, or assignee" value={search} onChange={(e) => setSearch(e.target.value)} /><select aria-label="Filter complaint status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="">All statuses</option><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="RESOLVED">Resolved</option><option value="CLOSED">Closed</option></select></div>
+      {filtered.length ? <div className="table-scroll"><table><thead><tr><th>Complaint</th><th>Customer</th><th>Category</th><th>Priority</th><th>Status</th><th>Assigned to</th><th>Reported</th></tr></thead><tbody>{filtered.map((row) => <tr key={row.complaint_id} className="click" onClick={() => openComplaint(row)}><td><strong>{row.subject}</strong><div className="muted">{row.invoice_no ? `Invoice ${row.invoice_no}` : "No linked sale"}</div></td><td>{row.customer_name}<div className="muted">{row.customer_phone}</div></td><td>{row.category.toLowerCase()}</td><td><span className={`complaint-priority priority-${row.priority.toLowerCase()}`}>{row.priority}</span></td><td><span className={`pill ${row.status === "OPEN" || row.status === "IN_PROGRESS" ? "warn" : ""}`}>{row.status.replaceAll("_", " ")}</span></td><td>{row.assigned_name ?? "Unassigned"}</td><td>{ddmmyyyy(row.created_at)}</td></tr>)}</tbody></table></div> : <div className="empty-state"><b>{rows.length ? "No matching complaints" : "No complaints recorded"}</b><p>Record a customer issue to start tracking ownership and resolution.</p></div>}
+    </div>
+    {selected && edit && <div className="modal crm-overlay" onClick={() => setSelected(null)}><form className="crm-modal complaint-modal" role="dialog" aria-modal="true" aria-label="Complaint details" onSubmit={saveComplaint} onClick={(e) => e.stopPropagation()}>
+      <div className="head"><div><div className="eyebrow">{selected.customer_name} · {selected.category}</div><h2>{selected.subject}</h2></div><button type="button" className="link" onClick={() => setSelected(null)}>Close</button></div>
+      <p className="complaint-description">{selected.description}</p><p className="team-help">Reported {ddmmyyyy(selected.created_at)} by {selected.created_by_name ?? "Team member"}{selected.invoice_no ? ` · Invoice ${selected.invoice_no}` : ""}</p>
+      <div className="crm-form-grid"><label>Status<select value={edit.status} onChange={(e) => setEdit({ ...edit, status: e.target.value })}><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="RESOLVED">Resolved</option><option value="CLOSED">Closed</option></select></label>
+        <label>Priority<select value={edit.priority} onChange={(e) => setEdit({ ...edit, priority: e.target.value })}><option value="LOW">Low</option><option value="NORMAL">Normal</option><option value="HIGH">High</option><option value="URGENT">Urgent</option></select></label>
+        {manager && <label>Assigned to<select value={edit.assignedTo} onChange={(e) => setEdit({ ...edit, assignedTo: e.target.value })}><option value="">Unassigned</option>{users.filter((user) => user.is_active).map((user) => <option key={user.user_id} value={user.user_id}>{user.full_name}</option>)}</select></label>}
+        <label className="crm-wide">Resolution / response<textarea rows={4} maxLength={5000} value={edit.resolution} onChange={(e) => setEdit({ ...edit, resolution: e.target.value })} /></label>
+      </div>
+      <div className="complaint-modal-actions"><button type="button" className="secondary" onClick={() => setSelected(null)}>Cancel</button><button className="primary">Save changes</button></div>
+    </form></div>}
   </>;
 }
 

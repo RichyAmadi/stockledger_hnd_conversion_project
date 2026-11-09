@@ -23,7 +23,7 @@ const stockOf = async (T: string, pid: string) => (await call("/products", T)).b
 
 async function main() {
   const tag = u();
-  let A = "", B = "", staff = "", pid = "", saleId = "", cust = "", ownerId = "", staffId = "";
+  let A = "", B = "", staff = "", pid = "", saleId = "", customerSaleId = "", complaintId = "", cust = "", ownerId = "", staffId = "";
   await tc("Health", "Database-backed API health check", "200, database ready", async () => {
     const r = await fetch(`http://localhost:${process.env.API_PORT ?? "4000"}/api/health`);
     const body: any = await r.json();
@@ -257,8 +257,49 @@ async function main() {
   });
   await tc("Customers", "Credit sale to a named customer", "Customer balance rises by ₦2,687.50", async () => {
     cust = (await call("/customers", A, { customerName: "Ibiso", phone: "08055500000", creditLimit: 10000 })).body.customer_id;
-    await call("/sales", staff, { items: [{ productId: pid, quantity: 1 }], paymentMethod: "CREDIT", customerId: cust });
+    customerSaleId = (await call("/sales", staff, { items: [{ productId: pid, quantity: 1 }], paymentMethod: "CREDIT", customerId: cust })).body.saleId;
     const c = (await call("/customers", A)).body.find((x: any) => x.customer_id === cust); return [`balance = ₦${c.outstanding_balance}`, c.outstanding_balance === 2687.5];
+  });
+  await tc("CRM", "Update a customer profile with contact notes and tags", "Updated details and sales summary are returned", async () => {
+    const updated = await call(`/customers/${cust}`, A, {
+      email: `crm${tag}@t.ng`, address: "12 Market Road", notes: "Prefers afternoon calls", tags: ["Wholesale", "VIP"],
+    }, "PUT");
+    const detail = await call(`/customers/${cust}`, A);
+    const listed = (await call("/customers", A)).body.find((customer: any) => customer.customer_id === cust);
+    return [`${updated.status}, ${detail.body.interactions.length} interactions, ${listed.orders_count} orders, ${listed.lifetime_value} lifetime value`,
+      updated.status === 200 && detail.body.customer.email === `crm${tag}@t.ng`
+      && detail.body.customer.notes === "Prefers afternoon calls" && detail.body.customer.tags.includes("VIP")
+      && detail.body.sales.some((sale: any) => sale.sale_id === customerSaleId)
+      && listed.orders_count === 1 && listed.lifetime_value === 2687.5];
+  });
+  await tc("CRM", "Log a customer interaction with a follow-up", "Interaction appears in the customer timeline", async () => {
+    const created = await call(`/customers/${cust}/interactions`, staff, {
+      interactionType: "CALL", subject: "Discussed next order", notes: "Customer requested a callback.", followUpAt: new Date(Date.now() + 86400000).toISOString(),
+    });
+    const detail = await call(`/customers/${cust}`, A);
+    return [`${created.status}, ${detail.body.interactions[0]?.interaction_type}, follow-up ${!!detail.body.interactions[0]?.follow_up_at}`,
+      created.status === 201 && detail.body.interactions[0]?.subject === "Discussed next order" && !!detail.body.interactions[0]?.follow_up_at];
+  });
+  await tc("Complaints", "Create a complaint linked to the customer's sale", "Complaint appears in the filtered queue with its invoice", async () => {
+    const created = await call("/complaints", staff, {
+      customerId: cust, saleId: customerSaleId, category: "PAYMENT", subject: "Payment allocation question",
+      description: "Customer needs the credit payment explained.", priority: "HIGH",
+    });
+    complaintId = created.body.complaint_id;
+    const queue = await call("/complaints?status=OPEN", A);
+    const item = queue.body.find((complaint: any) => complaint.complaint_id === complaintId);
+    return [`${created.status}, linked invoice ${item?.invoice_no}, assigned ${item?.assigned_name ?? "none"}`,
+      created.status === 201 && !!item && item.customer_name === "Ibiso" && !!item.invoice_no && item.priority === "HIGH"];
+  });
+  await tc("Complaints", "Restrict assignment and resolve a complaint", "Staff cannot assign; owner can assign and resolve", async () => {
+    const denied = await call(`/complaints/${complaintId}`, staff, { assignedTo: ownerId }, "PUT");
+    const assigned = await call(`/complaints/${complaintId}`, A, { assignedTo: ownerId, status: "IN_PROGRESS" }, "PUT");
+    const resolved = await call(`/complaints/${complaintId}`, A, { status: "RESOLVED", resolution: "Explained payment allocation." }, "PUT");
+    const queue = await call("/complaints?status=RESOLVED", A);
+    const item = queue.body.find((complaint: any) => complaint.complaint_id === complaintId);
+    return [`staff assign ${denied.status}, owner update ${assigned.status}, resolve ${resolved.status}`,
+      denied.status === 403 && assigned.status === 200 && resolved.status === 200
+      && item?.status === "RESOLVED" && item?.assigned_to === ownerId && !!item?.resolved_at];
   });
   await tc("Customers", "Reject a credit sale that exceeds the customer limit", "409; stock and balance remain unchanged", async () => {
     const stockBefore = await stockOf(A, pid);
@@ -318,6 +359,16 @@ async function main() {
   await tc("Multi-tenancy", "Tenant B sells tenant A's product by ID", "404; A's stock unchanged", async () => {
     const before = await stockOf(A, pid); const r = await call("/sales", B, { items: [{ productId: pid, quantity: 1 }], paymentMethod: "CASH" });
     return [`${r.status}, A's stock ${before} → ${await stockOf(A, pid)}`, r.status === 404 && before === (await stockOf(A, pid))];
+  });
+  await tc("Multi-tenancy", "Tenant B cannot access customer CRM or complaint records", "Customer and complaint access is tenant-scoped", async () => {
+    const profile = await call(`/customers/${cust}`, B);
+    const created = await call("/complaints", B, {
+      customerId: cust, category: "OTHER", subject: "Cross-tenant attempt", description: "Should not be accepted.",
+    });
+    const updated = await call(`/complaints/${complaintId}`, B, { status: "CLOSED" }, "PUT");
+    const queue = await call("/complaints", B);
+    return [`profile ${profile.status}, create ${created.status}, update ${updated.status}, queue ${queue.body.length}`,
+      profile.status === 404 && created.status === 404 && updated.status === 404 && queue.body.length === 0];
   });
   await tc("Multi-tenancy (database)", "Unfiltered SELECT/UPDATE as app role with B's context", "0 of A's rows read or changed", async () => {
     const db = new Client({ host: process.env.PGHOST ?? "localhost", database: process.env.PGDATABASE ?? "sims", user: "app_user", password: "app_pass" }); await db.connect();

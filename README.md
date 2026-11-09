@@ -13,6 +13,8 @@ psql -U postgres -d sims -f server/db/001_schema.sql
 psql -U postgres -d sims -f server/db/002_performance.sql
 psql -U postgres -d sims -f server/db/003_subscription_tiers.sql
 psql -U postgres -d sims -f server/db/004_business_logos.sql
+psql -U postgres -d sims -f server/db/005_hosted_auth_lookup.sql
+psql -U postgres -d sims -f server/db/006_crm_complaints.sql
 
 cd web
 npm ci
