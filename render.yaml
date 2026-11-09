@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: stockledger
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm ci --prefix web && npm ci --prefix server && npm run build --prefix web && npm run build --prefix server
+    startCommand: cd server && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: stockledger-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PGPOOL
+        value: "5"
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+
+databases:
+  - name: stockledger-db
+    databaseName: stockledger
+    user: app_user
+    region: oregon
+    plan: free

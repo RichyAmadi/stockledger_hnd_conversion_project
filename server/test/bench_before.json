@@ -1,0 +1,331 @@
+{
+ "load": {
+  "10": {
+   "products": {
+    "rps": 306,
+    "p50": 31,
+    "p90": 48,
+    "p99": 67,
+    "mean": 32.2,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 4587
+   },
+   "sale": {
+    "rps": 244,
+    "p50": 31,
+    "p90": 86,
+    "p99": 162,
+    "mean": 40.3,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 3659
+   },
+   "baselineSale": {
+    "rps": 429,
+    "p50": 21,
+    "p90": 30,
+    "p99": 47,
+    "mean": 22.8,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 6430
+   },
+   "report": {
+    "rps": 22,
+    "p50": 428,
+    "p90": 508,
+    "p99": 684,
+    "mean": 441.6,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 334
+   }
+  },
+  "50": {
+   "products": {
+    "rps": 512,
+    "p50": 94,
+    "p90": 119,
+    "p99": 144,
+    "mean": 97,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 7685
+   },
+   "sale": {
+    "rps": 251,
+    "p50": 180,
+    "p90": 302,
+    "p99": 440,
+    "mean": 197.5,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 3758
+   },
+   "baselineSale": {
+    "rps": 397,
+    "p50": 117,
+    "p90": 166,
+    "p99": 262,
+    "mean": 124.9,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 5962
+   },
+   "report": {
+    "rps": 12,
+    "p50": 3643,
+    "p90": 4675,
+    "p99": 4985,
+    "mean": 3709.3,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 180
+   }
+  },
+  "100": {
+   "products": {
+    "rps": 389,
+    "p50": 196,
+    "p90": 237,
+    "p99": 3076,
+    "mean": 255.5,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 5831
+   },
+   "sale": {
+    "rps": 226,
+    "p50": 419,
+    "p90": 561,
+    "p99": 744,
+    "mean": 435.9,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 3390
+   },
+   "baselineSale": {
+    "rps": 381,
+    "p50": 247,
+    "p90": 315,
+    "p99": 665,
+    "mean": 260.2,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 5716
+   },
+   "report": {
+    "rps": 5,
+    "p50": 5235,
+    "p90": 9403,
+    "p99": 9954,
+    "mean": 6010.4,
+    "non2xx": 0,
+    "errors": 57,
+    "total": 79
+   }
+  }
+ },
+ "consistency": {
+  "proposed": [
+   {
+    "run": 1,
+    "accepted": 100,
+    "rejected": 100,
+    "unitsSold": 100,
+    "recordedStock": 0,
+    "trueStock": 0,
+    "discrepancy": 0,
+    "oversold": 0
+   },
+   {
+    "run": 2,
+    "accepted": 100,
+    "rejected": 100,
+    "unitsSold": 100,
+    "recordedStock": 0,
+    "trueStock": 0,
+    "discrepancy": 0,
+    "oversold": 0
+   },
+   {
+    "run": 3,
+    "accepted": 100,
+    "rejected": 100,
+    "unitsSold": 100,
+    "recordedStock": 0,
+    "trueStock": 0,
+    "discrepancy": 0,
+    "oversold": 0
+   },
+   {
+    "run": 4,
+    "accepted": 100,
+    "rejected": 100,
+    "unitsSold": 100,
+    "recordedStock": 0,
+    "trueStock": 0,
+    "discrepancy": 0,
+    "oversold": 0
+   },
+   {
+    "run": 5,
+    "accepted": 100,
+    "rejected": 100,
+    "unitsSold": 100,
+    "recordedStock": 0,
+    "trueStock": 0,
+    "discrepancy": 0,
+    "oversold": 0
+   }
+  ],
+  "baseline": [
+   {
+    "run": 1,
+    "accepted": 200,
+    "rejected": 0,
+    "unitsSold": 200,
+    "recordedStock": 84,
+    "trueStock": -100,
+    "discrepancy": 184,
+    "oversold": 100
+   },
+   {
+    "run": 2,
+    "accepted": 200,
+    "rejected": 0,
+    "unitsSold": 200,
+    "recordedStock": 91,
+    "trueStock": -100,
+    "discrepancy": 191,
+    "oversold": 100
+   },
+   {
+    "run": 3,
+    "accepted": 200,
+    "rejected": 0,
+    "unitsSold": 200,
+    "recordedStock": 90,
+    "trueStock": -100,
+    "discrepancy": 190,
+    "oversold": 100
+   },
+   {
+    "run": 4,
+    "accepted": 200,
+    "rejected": 0,
+    "unitsSold": 200,
+    "recordedStock": 91,
+    "trueStock": -100,
+    "discrepancy": 191,
+    "oversold": 100
+   },
+   {
+    "run": 5,
+    "accepted": 200,
+    "rejected": 0,
+    "unitsSold": 200,
+    "recordedStock": 92,
+    "trueStock": -100,
+    "discrepancy": 192,
+    "oversold": 100
+   }
+  ]
+ },
+ "sequential": {
+  "proposed": {
+   "mean": 5.27,
+   "p50": 4.96,
+   "p95": 7.82
+  },
+  "baseline": {
+   "mean": 9.51,
+   "p50": 9.06,
+   "p95": 12.51
+  }
+ },
+ "staleAfterSale": {
+  "proposed": 0,
+  "baseline": 0
+ },
+ "offline": {
+  "50": {
+   "firstMs": 317,
+   "perSaleMs": 6.35,
+   "replayMs": 39,
+   "created": 50,
+   "duplicates": 50
+  },
+  "200": {
+   "firstMs": 1198,
+   "perSaleMs": 5.99,
+   "replayMs": 116,
+   "created": 200,
+   "duplicates": 200
+  },
+  "500": {
+   "firstMs": 2006,
+   "perSaleMs": 4.01,
+   "replayMs": 277,
+   "created": 500,
+   "duplicates": 500
+  }
+ },
+ "tenantScale": {
+  "before": {
+   "products": {
+    "rps": 471,
+    "p50": 41,
+    "p90": 58,
+    "p99": 78,
+    "mean": 42,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 4709
+   },
+   "report": {
+    "rps": 6,
+    "p50": 2674,
+    "p90": 2915,
+    "p99": 3055,
+    "mean": 2686.2,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 60
+   }
+  },
+  "after": {
+   "products": {
+    "rps": 353,
+    "p50": 55,
+    "p90": 79,
+    "p99": 100,
+    "mean": 56.1,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 3529
+   },
+   "report": {
+    "rps": 5,
+    "p50": 3296,
+    "p90": 3938,
+    "p99": 4007,
+    "mean": 3326.5,
+    "non2xx": 0,
+    "errors": 0,
+    "total": 51
+   }
+  },
+  "rowsBefore": {
+   "b": 3,
+   "p": 164,
+   "s": 32292
+  },
+  "rowsAfter": {
+   "b": 203,
+   "p": 40164,
+   "s": 92292
+  }
+ }
+}

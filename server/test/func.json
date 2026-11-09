@@ -1,0 +1,226 @@
+[
+ {
+  "id": "TC01",
+  "module": "Registration",
+  "description": "Register a new business with valid details",
+  "expected": "201 Created, token returned",
+  "actual": "201, token present",
+  "pass": true
+ },
+ {
+  "id": "TC02",
+  "module": "Registration",
+  "description": "Register with an invalid phone number",
+  "expected": "422, validation message",
+  "actual": "422, \"phone: Invalid string: must match pattern /^\\+?\\d{10,14}$/\"",
+  "pass": true
+ },
+ {
+  "id": "TC03",
+  "module": "Authentication",
+  "description": "Sign in with a wrong password",
+  "expected": "401 Unauthorized",
+  "actual": "401",
+  "pass": true
+ },
+ {
+  "id": "TC04",
+  "module": "Authentication",
+  "description": "Call a protected endpoint without a token",
+  "expected": "401 Unauthorized",
+  "actual": "401",
+  "pass": true
+ },
+ {
+  "id": "TC05",
+  "module": "User management",
+  "description": "Owner creates a sales-staff account",
+  "expected": "201 Created",
+  "actual": "201",
+  "pass": true
+ },
+ {
+  "id": "TC06",
+  "module": "Access control",
+  "description": "Sales staff tries to add a product",
+  "expected": "403 Forbidden",
+  "actual": "403",
+  "pass": true
+ },
+ {
+  "id": "TC07",
+  "module": "Access control",
+  "description": "Sales staff opens the profit report",
+  "expected": "403 Forbidden",
+  "actual": "403",
+  "pass": true
+ },
+ {
+  "id": "TC08",
+  "module": "Inventory",
+  "description": "Add product with opening stock of 10",
+  "expected": "201, stock = 10",
+  "actual": "201, stock = 10",
+  "pass": true
+ },
+ {
+  "id": "TC09",
+  "module": "Inventory",
+  "description": "Add product priced below cost",
+  "expected": "422 rejected",
+  "actual": "422",
+  "pass": true
+ },
+ {
+  "id": "TC10",
+  "module": "Inventory",
+  "description": "Add a product with a duplicate SKU",
+  "expected": "409 Conflict",
+  "actual": "409",
+  "pass": true
+ },
+ {
+  "id": "TC11",
+  "module": "Point of sale",
+  "description": "Sell 4 units for cash",
+  "expected": "Stock 10 → 6; total = 4 × 2,500 + 7.5% VAT = ₦10,750",
+  "actual": "stock = 6, total = ₦10750, change = ₦250",
+  "pass": true
+ },
+ {
+  "id": "TC12",
+  "module": "Point of sale",
+  "description": "Sell 7 units when only 6 remain",
+  "expected": "409; stock stays at 6",
+  "actual": "409 \"Only 6 Peak Milk 400g left in stock\", stock = 6",
+  "pass": true
+ },
+ {
+  "id": "TC13",
+  "module": "Alerts",
+  "description": "Sale takes stock to the re-order level (3)",
+  "expected": "Low-stock alert raised",
+  "actual": "alerts: [\"Peak Milk 400g is low (3 left)\"]; notifications: 1",
+  "pass": true
+ },
+ {
+  "id": "TC14",
+  "module": "Purchasing",
+  "description": "Receive a supplier delivery of 20 units",
+  "expected": "Stock 3 → 23; movement logged",
+  "actual": "stock = 23; second receipt → 409",
+  "pass": true
+ },
+ {
+  "id": "TC15",
+  "module": "Customers",
+  "description": "Credit sale without a customer",
+  "expected": "422 rejected",
+  "actual": "422",
+  "pass": true
+ },
+ {
+  "id": "TC16",
+  "module": "Customers",
+  "description": "Credit sale to a named customer",
+  "expected": "Customer balance rises by ₦2,687.50",
+  "actual": "balance = ₦2687.5",
+  "pass": true
+ },
+ {
+  "id": "TC17",
+  "module": "Reports",
+  "description": "Gross profit for the period",
+  "expected": "8 units × ₦500 margin = ₦4,000",
+  "actual": "₦4000, margin 20%",
+  "pass": true
+ },
+ {
+  "id": "TC18",
+  "module": "Subscription",
+  "description": "Add a 4th user on the Trial plan (limit 3)",
+  "expected": "402, plan limit message",
+  "actual": "402 \"User limit reached for your plan\"",
+  "pass": true
+ },
+ {
+  "id": "TC19",
+  "module": "Multi-tenancy",
+  "description": "Tenant B lists products",
+  "expected": "Sees none of tenant A's products",
+  "actual": "0 products visible",
+  "pass": true
+ },
+ {
+  "id": "TC20",
+  "module": "Multi-tenancy",
+  "description": "Tenant B requests tenant A's sale by its ID",
+  "expected": "404 Not Found",
+  "actual": "404",
+  "pass": true
+ },
+ {
+  "id": "TC21",
+  "module": "Multi-tenancy",
+  "description": "Tenant B sells tenant A's product by ID",
+  "expected": "404; A's stock unchanged",
+  "actual": "404, A's stock 22 → 22",
+  "pass": true
+ },
+ {
+  "id": "TC22",
+  "module": "Multi-tenancy (database)",
+  "description": "Unfiltered SELECT/UPDATE as app role with B's context",
+  "expected": "0 of A's rows read or changed",
+  "actual": "no context: 0 rows; B updated 0 rows (own only); B sees 0 sales; insert into A: blocked",
+  "pass": true
+ },
+ {
+  "id": "TC23",
+  "module": "Offline sync",
+  "description": "Upload 3 queued offline sales, then upload the same batch again",
+  "expected": "3 created, then 3 marked duplicate; stock drops by 3 once",
+  "actual": "first: 3 new; second: 3 duplicate; stock 22 → 19",
+  "pass": true
+ },
+ {
+  "id": "TC24",
+  "module": "Payments (Paystack)",
+  "description": "Webhook with a forged signature",
+  "expected": "401 rejected",
+  "actual": "401",
+  "pass": true
+ },
+ {
+  "id": "TC25",
+  "module": "Payments (Paystack)",
+  "description": "Webhook for a reference the customer never paid",
+  "expected": "Not reconciled; sale stays PENDING",
+  "actual": "result \"mismatch\", sale PENDING",
+  "pass": true
+ },
+ {
+  "id": "TC26",
+  "module": "Payments (Paystack)",
+  "description": "Customer pays; signed webhook arrives",
+  "expected": "Verified with Paystack; sale marked PAID (₦5,375)",
+  "actual": "result \"reconciled\", sale PAID, paid ₦5375.00",
+  "pass": true
+ },
+ {
+  "id": "TC27",
+  "module": "Payments (Paystack)",
+  "description": "Same webhook delivered a second time",
+  "expected": "Ignored as duplicate; paid amount not doubled",
+  "actual": "result \"duplicate\", paid ₦5375.00",
+  "pass": true
+ },
+ {
+  "id": "TC28",
+  "module": "Audit",
+  "description": "Every sale and product change is logged",
+  "expected": "Audit rows ≥ sales + products",
+  "actual": "8 audit rows for 7 sales + 1 product",
+  "pass": true
+ }
+]

@@ -1,0 +1,1 @@
+ALTER TABLE businesses ALTER COLUMN logo_url TYPE TEXT;

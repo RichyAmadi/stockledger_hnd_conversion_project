@@ -1,0 +1,1 @@
+{"4G": {"coldMs": 563, "repeatMs": 77, "offlineMs": 75, "bytes": 76392}, "Fast 3G": {"coldMs": 1628, "repeatMs": 80, "offlineMs": 76, "bytes": 76392}, "Slow 3G": {"coldMs": 5710, "repeatMs": 70, "offlineMs": 72, "bytes": 76392}}
