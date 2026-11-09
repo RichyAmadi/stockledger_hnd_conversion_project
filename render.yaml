@@ -4,7 +4,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm ci --prefix web && npm ci --prefix server && npm run build --prefix web && npm run build --prefix server
+    buildCommand: npm ci --include=dev --prefix web && npm ci --include=dev --prefix server && npm run build --prefix web && npm run build --prefix server
     startCommand: cd server && npm start
     healthCheckPath: /api/health
     envVars:
