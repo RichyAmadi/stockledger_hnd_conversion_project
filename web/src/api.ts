@@ -1,8 +1,13 @@
 import { get, set } from "idb-keyval";
 
-let token = localStorage.getItem("token") ?? "";
-export const setToken = (t: string) => { token = t; localStorage.setItem("token", t); };
-export const clearToken = () => { token = ""; localStorage.removeItem("token"); };
+/** The platform-admin console lives at its own URL and keeps a session separate from business sign-ins. */
+export const PLATFORM_ADMIN_PATH = "/platform-admin";
+export const isPlatformArea = location.pathname === PLATFORM_ADMIN_PATH || location.pathname.startsWith(`${PLATFORM_ADMIN_PATH}/`);
+const TOKEN_KEY = isPlatformArea ? "platformAdminToken" : "token";
+
+let token = localStorage.getItem(TOKEN_KEY) ?? "";
+export const setToken = (t: string) => { token = t; localStorage.setItem(TOKEN_KEY, t); };
+export const clearToken = () => { token = ""; localStorage.removeItem(TOKEN_KEY); };
 export const hasToken = () => !!token;
 
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {

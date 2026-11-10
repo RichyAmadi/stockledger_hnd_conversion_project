@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { api, setToken, clearToken, hasToken, naira, ddmmyyyy, queueSale, pendingCount, syncQueue } from "./api";
+import { api, setToken, clearToken, hasToken, isPlatformArea, naira, ddmmyyyy, queueSale, pendingCount, syncQueue } from "./api";
 
 type Page = "dashboard" | "pos" | "inventory" | "purchasing" | "sales" | "customers" | "complaints" | "reports" | "insights" | "plans" | "team" | "admin" | "profile";
 
@@ -14,12 +14,7 @@ export default function App() {
 
   const loadMe = useCallback(async () => {
     try {
-      setMe(await api("/platform-admin/me"));
-      setAuthMessage("");
-      return;
-    } catch { /* try tenant authentication */ }
-    try {
-      setMe(await api("/me"));
+      setMe(await api(isPlatformArea ? "/platform-admin/me" : "/me"));
       setAuthMessage("");
     } catch {
       clearToken();
@@ -33,6 +28,7 @@ export default function App() {
     setAuthMessage("You have been logged out.");
   };
   useEffect(() => { if (hasToken()) loadMe(); }, [loadMe]);
+  useEffect(() => { document.title = isPlatformArea ? "StockLedger · Platform administration" : "StockLedger"; }, []);
   useEffect(() => {
     let busy = false;
     const up = async () => {
@@ -47,8 +43,8 @@ export default function App() {
   }, []);
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(""), 3500); return () => clearTimeout(t); } }, [toast]);
 
-  if (!me) return <Auth onDone={loadMe} message={authMessage} />;
-  if (me.isPlatformAdmin) return <PlatformAdminDashboard user={me} onLogout={logout} />;
+  if (!me) return <Auth onDone={loadMe} message={authMessage} platform={isPlatformArea} />;
+  if (isPlatformArea) return <PlatformAdminDashboard user={me} onLogout={logout} />;
   const planName = String(me.business?.plan_name ?? "").toLowerCase();
   const hasAnalytics = !me.business?.subscription_expired && (planName === "trial" || planName === "standard" || planName === "premium");
   const canManageInventory = ["OWNER", "ADMIN", "INVENTORY_MANAGER"].includes(me.role);
@@ -106,8 +102,8 @@ export default function App() {
   );
 }
 
-function Auth({ onDone, message }: { onDone: () => void; message?: string }) {
-  const [mode, setMode] = useState<"login" | "register" | "platform">("login");
+function Auth({ onDone, message, platform = false }: { onDone: () => void; message?: string; platform?: boolean }) {
+  const [mode, setMode] = useState<"login" | "register" | "platform">(platform ? "platform" : "login");
   const [f, setF] = useState<any>({ email: "", password: "" });
   const [err, setErr] = useState("");
   const on = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
@@ -135,8 +131,6 @@ function Auth({ onDone, message }: { onDone: () => void; message?: string }) {
       <button className="primary">{mode === "platform" ? "Sign in to administration" : mode === "login" ? "Sign in" : "Create business account"}</button>
       {mode !== "platform" && <button type="button" className="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
         {mode === "login" ? "New business? Register" : "Have an account? Sign in"}</button>}
-      <button type="button" className="link" onClick={() => setMode(mode === "platform" ? "login" : "platform")}>
-        {mode === "platform" ? "Business sign in" : "Platform administrator"}</button>
     </form></div>
   );
 }
