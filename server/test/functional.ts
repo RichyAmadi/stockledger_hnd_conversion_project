@@ -5,8 +5,11 @@ import { call } from "./seed";
 
 const PS = "http://localhost:4100";
 const SECRET = process.env.PAYSTACK_SECRET_KEY ?? "sk_test_local";
+const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL ?? "";
+const platformAdminPassword = process.env.PLATFORM_ADMIN_PASSWORD ?? "";
 const results: { id: string; module: string; description: string; expected: string; actual: string; pass: boolean }[] = [];
 let n = 0;
+let platformAdminToken = "";
 async function tc(module: string, description: string, expected: string, fn: () => Promise<[string, boolean]>) {
   const id = `TC${String(++n).padStart(2, "0")}`;
   try { const [actual, pass] = await fn(); results.push({ id, module, description, expected, actual, pass }); }
@@ -33,6 +36,15 @@ async function main() {
     const r = await call("/auth/register", undefined, { businessName: "Test Mart " + tag, businessType: "Retail", email: `a${tag}@t.ng`, phone: "08030000000", state: "Rivers", ownerName: "Ada Obi", password: "Passw0rd!" });
     A = r.body.token; return [`${r.status}, token ${A ? "present" : "missing"}`, r.status === 201 && !!A];
   });
+  if (platformAdminEmail && platformAdminPassword) {
+    await tc("Platform administration", "Sign in with the isolated platform administrator", "Platform-scoped token returned", async () => {
+      const login = await call("/platform-admin/auth/login", undefined, { email: platformAdminEmail, password: platformAdminPassword });
+      platformAdminToken = login.body.token ?? "";
+      const me = platformAdminToken ? await call("/platform-admin/me", platformAdminToken) : { status: 0, body: {} };
+      return [`${login.status}, platform identity ${me.body.isPlatformAdmin ? "verified" : "missing"}`,
+        login.status === 200 && !!platformAdminToken && me.status === 200 && me.body.isPlatformAdmin === true];
+    });
+  }
   await tc("Subscription", "Catalog exposes barcode and QR code plan features", "Standard includes barcode scanning; Premium includes barcode and QR code scanning", async () => {
     const plans = await call("/plans");
     const standard = plans.body.find((plan: any) => plan.id === "standard");
@@ -380,6 +392,43 @@ async function main() {
     await db.query("ROLLBACK"); await db.end();
     return [`no context: ${none.rows[0].n} rows; B updated ${upd.rowCount} rows (own only); B sees ${ins.rows[0].n} sales; insert into A: ${crossInsert}`, none.rows[0].n === 0 && upd.rowCount === 0 && ins.rows[0].n === 0 && crossInsert === "blocked"];
   });
+  if (platformAdminToken) {
+    await tc("Platform administration", "Reject tenant tokens on platform routes", "Tenant token receives 401", async () => {
+      const r = await call("/platform-admin/businesses", A);
+      return [`${r.status}`, r.status === 401];
+    });
+    await tc("Platform administration", "Monitor business profile and subscription", "Directory and details show tenant activity without leaking data to tenant auth", async () => {
+      const profile = (await call("/me", A)).body;
+      const directory = await call(`/platform-admin/businesses?search=${encodeURIComponent(profile.business.email)}`, platformAdminToken);
+      const business = directory.body.businesses?.[0];
+      const detail = business ? await call(`/platform-admin/businesses/${business.business_id}`, platformAdminToken) : { status: 0, body: {} };
+      return [`overview ${directory.body.total}, users ${detail.body.stats?.user_count}, sales ${detail.body.stats?.sales_count}`,
+        directory.status === 200 && business?.business_id === profile.businessId && detail.status === 200
+        && detail.body.users.some((user: any) => user.role === "OWNER") && typeof detail.body.business.is_active === "boolean"];
+    });
+    await tc("Platform administration", "Manage staff access and role permissions", "Role changes revoke old token; disabling and re-enabling restores staff access", async () => {
+      const businessId = (await call("/me", A)).body.businessId;
+      const promoted = await call(`/platform-admin/businesses/${businessId}/users/${staffId}`, platformAdminToken, { role: "INVENTORY_MANAGER" }, "PUT");
+      const staleRole = await call("/products", staff);
+      const restoredRole = await call(`/platform-admin/businesses/${businessId}/users/${staffId}`, platformAdminToken, { role: "SALES_STAFF" }, "PUT");
+      const disabled = await call(`/platform-admin/businesses/${businessId}/users/${staffId}`, platformAdminToken, { isActive: false }, "PUT");
+      const blocked = await call("/products", staff);
+      const enabled = await call(`/platform-admin/businesses/${businessId}/users/${staffId}`, platformAdminToken, { isActive: true }, "PUT");
+      const active = await call("/products", staff);
+      return [`promote ${promoted.status}, stale token ${staleRole.status}, role restore ${restoredRole.status}, disable ${disabled.status}, blocked ${blocked.status}, re-enable ${enabled.status}, active ${active.status}`,
+        promoted.status === 200 && staleRole.status === 401 && restoredRole.status === 200
+        && disabled.status === 200 && blocked.status === 401 && enabled.status === 200 && active.status === 200];
+    });
+    await tc("Platform administration", "Suspend and reactivate a business account", "Suspension blocks tenant requests and reactivation restores access", async () => {
+      const businessId = (await call("/me", B)).body.businessId;
+      const suspended = await call(`/platform-admin/businesses/${businessId}/status`, platformAdminToken, { isActive: false }, "PUT");
+      const blocked = await call("/me", B);
+      const reactivated = await call(`/platform-admin/businesses/${businessId}/status`, platformAdminToken, { isActive: true }, "PUT");
+      const restored = await call("/me", B);
+      return [`suspend ${suspended.status}, blocked ${blocked.status}, reactivate ${reactivated.status}, restored ${restored.status}`,
+        suspended.status === 200 && blocked.status === 401 && reactivated.status === 200 && restored.status === 200];
+    });
+  }
   // ---- offline sync ----
   await tc("Offline sync", "Upload 3 queued offline sales, then upload the same batch again", "3 created, then 3 marked duplicate; stock drops by 3 once", async () => {
     const before = await stockOf(A, pid);

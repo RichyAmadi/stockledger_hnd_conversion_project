@@ -6,9 +6,10 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
-import { pool, withTenant } from "./db";
+import { pool, withPlatformAdmin, withTenant } from "./db";
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-me";
+const PLATFORM_ADMIN_JWT_SECRET = process.env.PLATFORM_ADMIN_JWT_SECRET ?? JWT_SECRET;
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY ?? "sk_test_local";
 const PAYSTACK_BASE = process.env.PAYSTACK_BASE_URL ?? "https://api.paystack.co";
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS ?? 10);
@@ -44,7 +45,8 @@ const planHasFeature = (planName: string | null | undefined, feature: PlanFeatur
 
 type Role = "OWNER" | "ADMIN" | "INVENTORY_MANAGER" | "SALES_STAFF";
 interface Auth { userId: string; businessId: string; branchId: string; role: Role; name: string }
-declare global { namespace Express { interface Request { auth?: Auth } } }
+interface PlatformAuth { platformAdminId: string; email: string; name: string }
+declare global { namespace Express { interface Request { auth?: Auth; platformAuth?: PlatformAuth } } }
 
 class HttpError extends Error { constructor(public status: number, msg: string) { super(msg); } }
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) =>
@@ -57,15 +59,33 @@ function requireAuth(...roles: Role[]) {
       const a = jwt.verify(h.replace(/^Bearer /, ""), JWT_SECRET) as Auth;
       if (roles.length && !roles.includes(a.role)) return next(new HttpError(403, "Your role cannot perform this action"));
       withTenant(a.businessId, (c) => c.query(
-        "SELECT 1 FROM users WHERE user_id = $1 AND is_active = TRUE",
-        [a.userId],
+        `SELECT 1 FROM users u JOIN businesses b USING (business_id)
+         WHERE u.user_id = $1 AND u.is_active = TRUE AND u.role = $3
+           AND b.business_id = $2 AND b.is_active = TRUE`,
+        [a.userId, a.businessId, a.role],
       )).then((result) => {
-        if (!result.rowCount) return next(new HttpError(401, "Account is inactive or no longer exists"));
+        if (!result.rowCount) return next(new HttpError(401, "Account or business is inactive or no longer exists"));
         req.auth = a;
         next();
       }).catch(next);
     } catch { next(new HttpError(401, "Not signed in")); }
   };
+}
+
+function requirePlatformAdmin(req: Request, _res: Response, next: NextFunction) {
+  const header = req.headers.authorization ?? "";
+  try {
+    const claims = jwt.verify(header.replace(/^Bearer /, ""), PLATFORM_ADMIN_JWT_SECRET) as { platformAdminId?: string; scope?: string };
+    if (!claims.platformAdminId || claims.scope !== "platform_admin") throw new Error("Invalid platform token");
+    pool.query(`SELECT platform_admin_id, email, full_name FROM platform_admins
+      WHERE platform_admin_id = $1 AND is_active = TRUE`, [claims.platformAdminId])
+      .then((result) => {
+        if (!result.rowCount) return next(new HttpError(401, "Platform administrator is inactive"));
+        const admin = result.rows[0];
+        req.platformAuth = { platformAdminId: admin.platform_admin_id, email: admin.email, name: admin.full_name };
+        next();
+      }).catch(next);
+  } catch { next(new HttpError(401, "Platform administrator sign-in required")); }
 }
 
 function requirePlanFeature(feature: PlanFeature) {
@@ -100,6 +120,130 @@ export function buildApp() {
   app.use(cors());
   // keep the raw body for Paystack signature verification
   app.use(express.json({ limit: "2mb", verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+
+  app.post("/api/platform-admin/auth/login", wrap(async (req, res) => {
+    const { email, password } = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
+    const result = await pool.query(`SELECT platform_admin_id, email, full_name, password_hash
+      FROM platform_admins WHERE email = $1 AND is_active = TRUE`, [email.toLowerCase()]);
+    const admin = result.rows[0];
+    if (!admin || !(await bcrypt.compare(password, admin.password_hash))) throw new HttpError(401, "Wrong email or password");
+    await pool.query("UPDATE platform_admins SET last_login = now() WHERE platform_admin_id = $1", [admin.platform_admin_id]);
+    const token = jwt.sign({ platformAdminId: admin.platform_admin_id, scope: "platform_admin" }, PLATFORM_ADMIN_JWT_SECRET, { expiresIn: "8h" });
+    res.json({ token, user: { id: admin.platform_admin_id, name: admin.full_name, email: admin.email, isPlatformAdmin: true } });
+  }));
+
+  app.get("/api/platform-admin/me", requirePlatformAdmin, (req, res) => {
+    res.json({ ...req.platformAuth, isPlatformAdmin: true });
+  });
+
+  app.get("/api/platform-admin/overview", requirePlatformAdmin, wrap(async (_req, res) => {
+    const summary = await withPlatformAdmin((c) => c.query(`SELECT
+      (SELECT COUNT(*)::int FROM businesses) AS total_businesses,
+      (SELECT COUNT(*)::int FROM businesses WHERE is_active = TRUE) AS active_businesses,
+      (SELECT COUNT(*)::int FROM businesses WHERE is_active = FALSE) AS suspended_businesses,
+      (SELECT COUNT(*)::int FROM businesses WHERE created_at >= now() - interval '30 days') AS new_businesses_30d,
+      (SELECT COUNT(DISTINCT business_id)::int FROM subscriptions
+        WHERE status = 'ACTIVE' AND expiry_date >= CURRENT_DATE) AS active_subscriptions,
+      (SELECT COUNT(*)::int FROM sales WHERE created_at >= now() - interval '30 days') AS sales_30d,
+      (SELECT COALESCE(SUM(grand_total),0)::float FROM sales WHERE created_at >= now() - interval '30 days') AS revenue_30d`));
+    res.json(summary.rows[0]);
+  }));
+
+  app.get("/api/platform-admin/businesses", requirePlatformAdmin, wrap(async (req, res) => {
+    const search = String(req.query.search ?? "").trim().slice(0, 120);
+    const status = String(req.query.status ?? "all").toLowerCase();
+    const plan = String(req.query.plan ?? "").trim().slice(0, 40);
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 100));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    if (!["all", "active", "suspended"].includes(status)) throw new HttpError(422, "Invalid account status filter");
+    const result = await withPlatformAdmin((c) => c.query(`SELECT b.business_id,b.business_name,b.business_type,b.email,b.phone,b.state,
+      b.is_active,b.created_at,sub.plan_name,sub.status AS subscription_status,sub.expiry_date,
+      users.user_count,products.product_count,sales.sales_count,sales.revenue,last.last_activity,
+      COUNT(*) OVER()::int AS total_count
+      FROM businesses b
+      LEFT JOIN LATERAL (SELECT plan_name,status,expiry_date FROM subscriptions WHERE business_id = b.business_id
+        ORDER BY start_date DESC LIMIT 1) sub ON TRUE
+      LEFT JOIN LATERAL (SELECT COUNT(*)::int AS user_count FROM users WHERE business_id = b.business_id) users ON TRUE
+      LEFT JOIN LATERAL (SELECT COUNT(*)::int AS product_count FROM products WHERE business_id = b.business_id) products ON TRUE
+      LEFT JOIN LATERAL (SELECT COUNT(*)::int AS sales_count,COALESCE(SUM(grand_total),0)::float AS revenue
+        FROM sales WHERE business_id = b.business_id) sales ON TRUE
+      LEFT JOIN LATERAL (SELECT MAX(created_at) AS last_activity FROM audit_logs WHERE business_id = b.business_id) last ON TRUE
+      WHERE ($1 = '' OR b.business_name ILIKE $2 OR b.email ILIKE $2 OR b.phone ILIKE $2 OR b.state ILIKE $2)
+        AND ($3 = 'all' OR ($3 = 'active' AND b.is_active) OR ($3 = 'suspended' AND NOT b.is_active))
+        AND ($4 = '' OR LOWER(COALESCE(sub.plan_name,'trial')) = LOWER($4))
+      ORDER BY b.created_at DESC LIMIT $5 OFFSET $6`,
+    [search, `%${search}%`, status, plan, limit, offset]));
+    res.json({ businesses: result.rows.map(({ total_count, ...business }) => business), total: result.rows[0]?.total_count ?? 0, limit, offset });
+  }));
+
+  app.get("/api/platform-admin/businesses/:id", requirePlatformAdmin, wrap(async (req, res) => {
+    const detail = await withPlatformAdmin(async (c) => {
+      const business = await c.query(`SELECT b.business_id,b.business_name,b.business_type,b.email,b.phone,b.address,b.state,
+        b.logo_url,b.currency,b.tax_rate::float,b.is_active,b.created_at,sub.plan_name,sub.amount::float AS plan_amount,
+        sub.billing_cycle,sub.status AS subscription_status,sub.start_date,sub.expiry_date
+        FROM businesses b LEFT JOIN LATERAL (SELECT plan_name,amount,billing_cycle,status,start_date,expiry_date
+          FROM subscriptions WHERE business_id = b.business_id ORDER BY start_date DESC LIMIT 1) sub ON TRUE
+        WHERE b.business_id = $1`, [req.params.id]);
+      if (!business.rowCount) throw new HttpError(404, "Business not found");
+      const id = business.rows[0].business_id;
+      const [stats, users, activity, platformAudit] = await Promise.all([
+        c.query(`SELECT (SELECT COUNT(*)::int FROM users WHERE business_id = $1) AS user_count,
+          (SELECT COUNT(*)::int FROM products WHERE business_id = $1) AS product_count,
+          (SELECT COUNT(*)::int FROM customers WHERE business_id = $1) AS customer_count,
+          (SELECT COUNT(*)::int FROM sales WHERE business_id = $1) AS sales_count,
+          (SELECT COUNT(*)::int FROM sales WHERE business_id = $1 AND created_at >= now() - interval '30 days') AS sales_30d,
+          (SELECT COALESCE(SUM(grand_total),0)::float FROM sales WHERE business_id = $1 AND created_at >= now() - interval '30 days') AS revenue_30d`, [id]),
+        c.query(`SELECT user_id,full_name,email,phone,role,is_active,last_login,created_at FROM users
+          WHERE business_id = $1 ORDER BY CASE role WHEN 'OWNER' THEN 0 WHEN 'ADMIN' THEN 1 ELSE 2 END,full_name`, [id]),
+        c.query(`SELECT al.action,al.entity,al.created_at,u.full_name FROM audit_logs al
+          LEFT JOIN users u ON u.user_id = al.user_id WHERE al.business_id = $1 ORDER BY al.created_at DESC LIMIT 20`, [id]),
+        c.query(`SELECT action,details,created_at FROM platform_admin_audit_logs
+          WHERE business_id = $1 ORDER BY created_at DESC LIMIT 20`, [id]),
+      ]);
+      return { business: business.rows[0], stats: stats.rows[0], users: users.rows, activity: activity.rows, administrationHistory: platformAudit.rows };
+    });
+    res.json(detail);
+  }));
+
+  app.put("/api/platform-admin/businesses/:id/status", requirePlatformAdmin, wrap(async (req, res) => {
+    const { isActive } = z.object({ isActive: z.boolean() }).parse(req.body);
+    const admin = req.platformAuth!;
+    const updated = await withPlatformAdmin(async (c) => {
+      const result = await c.query("UPDATE businesses SET is_active = $2 WHERE business_id = $1 RETURNING business_id,business_name,is_active", [req.params.id, isActive]);
+      if (!result.rowCount) throw new HttpError(404, "Business not found");
+      await c.query(`INSERT INTO platform_admin_audit_logs (platform_admin_id,business_id,action,details)
+        VALUES ($1,$2,$3,$4)`, [admin.platformAdminId, req.params.id, isActive ? "BUSINESS_REACTIVATED" : "BUSINESS_SUSPENDED", JSON.stringify({ is_active: isActive })]);
+      return result.rows[0];
+    });
+    res.json(updated);
+  }));
+
+  app.put("/api/platform-admin/businesses/:businessId/users/:userId", requirePlatformAdmin, wrap(async (req, res) => {
+    const changes = z.object({
+      isActive: z.boolean().optional(),
+      role: z.enum(["ADMIN", "INVENTORY_MANAGER", "SALES_STAFF"]).optional(),
+    }).refine((value) => Object.keys(value).length > 0, "Provide a role or access status to update").parse(req.body);
+    const admin = req.platformAuth!;
+    const businessId = String(req.params.businessId);
+    const userId = String(req.params.userId);
+    const updated = await withTenant(businessId, async (c) => {
+      const current = await c.query("SELECT user_id,full_name,email,role,is_active FROM users WHERE user_id = $1 FOR UPDATE", [userId]);
+      if (!current.rowCount) throw new HttpError(404, "Business user not found");
+      const user = current.rows[0];
+      if (user.role === "OWNER") throw new HttpError(403, "The business owner role cannot be changed here");
+      const result = await c.query(`UPDATE users SET role = $2,is_active = $3 WHERE user_id = $1
+        RETURNING user_id,full_name,email,role,is_active,last_login,created_at`, [
+        user.user_id, changes.role ?? user.role, changes.isActive ?? user.is_active,
+      ]);
+      await c.query(`INSERT INTO platform_admin_audit_logs (platform_admin_id,business_id,action,details)
+        VALUES ($1,$2,'BUSINESS_USER_UPDATED',$3)`, [
+        admin.platformAdminId, businessId,
+        JSON.stringify({ user_id: user.user_id, old_role: user.role, role: result.rows[0].role, is_active: result.rows[0].is_active }),
+      ]);
+      return result.rows[0];
+    });
+    res.json(updated);
+  }));
 
   app.get("/api/health", wrap(async (_req, res) => {
     await pool.query("SELECT 1");

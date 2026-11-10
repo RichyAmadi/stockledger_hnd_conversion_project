@@ -12,14 +12,21 @@ export default function App() {
   const [tick, setTick] = useState(0);
   const [authMessage, setAuthMessage] = useState("");
 
-  const loadMe = useCallback(() => api("/me").then((user) => {
-    setMe(user);
-    setAuthMessage("");
-  }).catch(() => {
-    clearToken();
-    setMe(null);
-    setAuthMessage("Your session expired or could not be verified. Please sign in again.");
-  }), []);
+  const loadMe = useCallback(async () => {
+    try {
+      setMe(await api("/platform-admin/me"));
+      setAuthMessage("");
+      return;
+    } catch { /* try tenant authentication */ }
+    try {
+      setMe(await api("/me"));
+      setAuthMessage("");
+    } catch {
+      clearToken();
+      setMe(null);
+      setAuthMessage("Your session expired or could not be verified. Please sign in again.");
+    }
+  }, []);
   const logout = () => {
     clearToken();
     setMe(null);
@@ -41,6 +48,7 @@ export default function App() {
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(""), 3500); return () => clearTimeout(t); } }, [toast]);
 
   if (!me) return <Auth onDone={loadMe} message={authMessage} />;
+  if (me.isPlatformAdmin) return <PlatformAdminDashboard user={me} onLogout={logout} />;
   const planName = String(me.business?.plan_name ?? "").toLowerCase();
   const hasAnalytics = !me.business?.subscription_expired && (planName === "trial" || planName === "standard" || planName === "premium");
   const canManageInventory = ["OWNER", "ADMIN", "INVENTORY_MANAGER"].includes(me.role);
@@ -99,17 +107,20 @@ export default function App() {
 }
 
 function Auth({ onDone, message }: { onDone: () => void; message?: string }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register" | "platform">("login");
   const [f, setF] = useState<any>({ email: "", password: "" });
   const [err, setErr] = useState("");
   const on = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
   const submit = async (e: any) => {
     e.preventDefault(); setErr("");
-    try { const r = await api(`/auth/${mode}`, { method: "POST", body: f }); setToken(r.token); onDone(); } catch (x: any) { setErr(x.message); }
+    try {
+      const endpoint = mode === "platform" ? "/platform-admin/auth/login" : `/auth/${mode}`;
+      const r = await api(endpoint, { method: "POST", body: f }); setToken(r.token); onDone();
+    } catch (x: any) { setErr(x.message); }
   };
   return (
     <div className="auth"><form onSubmit={submit} className="card">
-      <h1>StockLedger</h1><p className="muted">Sales and inventory for Nigerian businesses</p>
+      <h1>StockLedger</h1><p className="muted">{mode === "platform" ? "Platform administration" : "Sales and inventory for Nigerian businesses"}</p>
       {message && <div className="err" role="alert">{message}</div>}
       {mode === "register" && <>
         <label>Business name<input value={f.businessName ?? ""} onChange={on("businessName")} /></label>
@@ -121,11 +132,98 @@ function Auth({ onDone, message }: { onDone: () => void; message?: string }) {
       <label>Email<input type="email" value={f.email} onChange={on("email")} /></label>
       <label>Password<input type="password" value={f.password} onChange={on("password")} /></label>
       {err && <div className="err">{err}</div>}
-      <button className="primary">{mode === "login" ? "Sign in" : "Create business account"}</button>
-      <button type="button" className="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
-        {mode === "login" ? "New business? Register" : "Have an account? Sign in"}</button>
+      <button className="primary">{mode === "platform" ? "Sign in to administration" : mode === "login" ? "Sign in" : "Create business account"}</button>
+      {mode !== "platform" && <button type="button" className="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
+        {mode === "login" ? "New business? Register" : "Have an account? Sign in"}</button>}
+      <button type="button" className="link" onClick={() => setMode(mode === "platform" ? "login" : "platform")}>
+        {mode === "platform" ? "Business sign in" : "Platform administrator"}</button>
     </form></div>
   );
+}
+
+function PlatformAdminDashboard({ user, onLogout }: { user: any; onLogout: () => void }) {
+  const [overview, setOverview] = useState<any>(null);
+  const [rows, setRows] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("all");
+  const [plan, setPlan] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<any>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pageSize = 50;
+  const load = async () => {
+    setError("");
+    try {
+      const params = new URLSearchParams({ search, status, limit: String(pageSize), offset: String(offset) });
+      if (plan) params.set("plan", plan);
+      const [stats, directory] = await Promise.all([
+        api("/platform-admin/overview"),
+        api<{ businesses: any[]; total: number }>(`/platform-admin/businesses?${params}`),
+      ]);
+      setOverview(stats); setRows(directory.businesses); setTotal(directory.total);
+    } catch (e: any) { setError(e.message); }
+  };
+  useEffect(() => { load(); }, [search, status, plan, offset]);
+  const openBusiness = async (id: string) => {
+    setError("");
+    try { setSelected(await api(`/platform-admin/businesses/${id}`)); }
+    catch (e: any) { setError(e.message); }
+  };
+  const setBusinessActive = async (business: any) => {
+    const isActive = !business.is_active;
+    if (!window.confirm(`${isActive ? "Reactivate" : "Suspend"} ${business.business_name}?`)) return;
+    setBusy(true); setError("");
+    try {
+      await api(`/platform-admin/businesses/${business.business_id}/status`, { method: "PUT", body: { isActive } });
+      await load();
+      if (selected?.business.business_id === business.business_id) await openBusiness(business.business_id);
+    } catch (e: any) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  const updateUser = async (businessId: string, userId: string, changes: any) => {
+    setBusy(true); setError("");
+    try {
+      await api(`/platform-admin/businesses/${businessId}/users/${userId}`, { method: "PUT", body: changes });
+      await openBusiness(businessId); await load();
+    } catch (e: any) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  return <div className="platform-shell">
+    <aside className="platform-sidebar">
+      <div className="brand"><span className="brand-mark">S</span><span>StockLedger<small>PLATFORM ADMIN</small></span></div>
+      <div className="platform-nav"><span className="nav-label">OVERSIGHT</span><button className="on"><span>▦</span>Business directory</button></div>
+      <div className="platform-profile"><div><b>{user.name}</b><small>{user.email}</small></div><button className="secondary" onClick={onLogout}>Sign out</button></div>
+    </aside>
+    <main className="platform-main">
+      <header className="platform-header"><div><div className="eyebrow">SAAS OPERATIONS</div><h1>Business oversight</h1></div><button className="secondary" onClick={load} disabled={busy}>Refresh data</button></header>
+      {error && <div className="err" role="alert">{error}</div>}
+      {overview && <div className="platform-metrics"><div><span>Total businesses</span><strong>{overview.total_businesses}</strong></div><div><span>Active accounts</span><strong>{overview.active_businesses}</strong></div><div><span>Suspended</span><strong>{overview.suspended_businesses}</strong></div><div><span>Active subscriptions</span><strong>{overview.active_subscriptions}</strong></div><div><span>New · 30 days</span><strong>{overview.new_businesses_30d}</strong></div><div><span>Sales · 30 days</span><strong>{overview.sales_30d}</strong></div><div><span>Revenue · 30 days</span><strong>{naira(overview.revenue_30d)}</strong></div></div>}
+      <section className="platform-directory">
+        <div className="platform-directory-heading"><div><h2>Businesses</h2><p>{total} registered accounts</p></div><div className="platform-filters"><input aria-label="Search businesses" placeholder="Search business, email, phone, or state" value={search} onChange={(e) => { setOffset(0); setSearch(e.target.value); }} /><select aria-label="Filter business status" value={status} onChange={(e) => { setOffset(0); setStatus(e.target.value); }}><option value="all">All accounts</option><option value="active">Active</option><option value="suspended">Suspended</option></select><select aria-label="Filter subscription plan" value={plan} onChange={(e) => { setOffset(0); setPlan(e.target.value); }}><option value="">All plans</option><option value="trial">Trial</option><option value="basic">Basic</option><option value="standard">Standard</option><option value="premium">Premium</option></select></div></div>
+        <div className="platform-table-wrap"><table className="platform-table"><thead><tr><th>Business</th><th>Status</th><th>Plan</th><th>Users</th><th>Products</th><th>Sales</th><th>Activity</th><th>Action</th></tr></thead><tbody>
+          {rows.map((business) => <tr key={business.business_id}>
+            <td><button className="platform-business-link" onClick={() => openBusiness(business.business_id)}><strong>{business.business_name}</strong><small>{business.email} · {business.state}</small></button></td>
+            <td><span className={`platform-state ${business.is_active ? "active" : "suspended"}`}>{business.is_active ? "Active" : "Suspended"}</span></td>
+            <td><span>{business.plan_name ?? "Trial"}</span><small className="platform-sub-status">{business.subscription_status ?? "TRIAL"}{business.expiry_date ? ` · until ${String(business.expiry_date).slice(0, 10)}` : ""}</small></td>
+            <td>{business.user_count ?? 0}</td><td>{business.product_count ?? 0}</td><td>{business.sales_count ?? 0}</td><td>{business.last_activity ? ddmmyyyy(business.last_activity) : "—"}</td>
+            <td><button className="platform-action" disabled={busy} onClick={() => setBusinessActive(business)}>{business.is_active ? "Suspend" : "Reactivate"}</button></td>
+          </tr>)}
+        </tbody></table>{!rows.length && <div className="empty-state"><b>No businesses found</b><p>Adjust search or status filters.</p></div>}</div>
+        <div className="platform-pagination"><span>{total ? `${offset + 1}–${Math.min(offset + pageSize, total)} of ${total}` : "0 businesses"}</span><div><button className="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button><button className="secondary" disabled={offset + pageSize >= total} onClick={() => setOffset(offset + pageSize)}>Next</button></div></div>
+      </section>
+      {selected && <div className="modal platform-overlay" onClick={() => setSelected(null)}><section className="platform-detail" role="dialog" aria-modal="true" aria-label={`${selected.business.business_name} details`} onClick={(e) => e.stopPropagation()}>
+        <header className="platform-detail-head"><div><div className="eyebrow">BUSINESS PROFILE</div><h2>{selected.business.business_name}</h2><p>{selected.business.business_type} · {selected.business.state} · Joined {ddmmyyyy(selected.business.created_at)}</p></div><div><button className="platform-action" disabled={busy} onClick={() => setBusinessActive(selected.business)}>{selected.business.is_active ? "Suspend account" : "Reactivate account"}</button><button className="link" onClick={() => setSelected(null)}>Close</button></div></header>
+        <div className="platform-detail-metrics"><div><span>Users</span><strong>{selected.stats.user_count}</strong></div><div><span>Products</span><strong>{selected.stats.product_count}</strong></div><div><span>Customers</span><strong>{selected.stats.customer_count}</strong></div><div><span>All-time sales</span><strong>{selected.stats.sales_count}</strong></div><div><span>Sales · 30 days</span><strong>{selected.stats.sales_30d}</strong></div><div><span>Revenue · 30 days</span><strong>{naira(selected.stats.revenue_30d)}</strong></div></div>
+        <div className="platform-detail-grid"><section className="platform-detail-section"><div className="platform-section-heading"><h3>Business account</h3><span className={`platform-state ${selected.business.is_active ? "active" : "suspended"}`}>{selected.business.is_active ? "Active" : "Suspended"}</span></div><dl className="platform-profile-list"><div><dt>Email</dt><dd>{selected.business.email}</dd></div><div><dt>Phone</dt><dd>{selected.business.phone}</dd></div><div><dt>Address</dt><dd>{selected.business.address || "Not provided"}</dd></div><div><dt>Plan</dt><dd>{selected.business.plan_name ?? "Trial"} · {selected.business.subscription_status ?? "TRIAL"}</dd></div><div><dt>Plan expiry</dt><dd>{selected.business.expiry_date ? String(selected.business.expiry_date).slice(0, 10) : "—"}</dd></div></dl></section>
+          <section className="platform-detail-section"><div className="platform-section-heading"><h3>Team access</h3><span className="count-badge">{selected.users.length} users</span></div><div className="platform-team-list">{selected.users.map((account: any) => <div className="platform-team-row" key={account.user_id}><div><strong>{account.full_name}</strong><small>{account.email} · {account.role.replaceAll("_", " ")}</small></div>{account.role === "OWNER" ? <span className="platform-owner-badge">Owner</span> : <div className="platform-user-controls"><select aria-label={`Role for ${account.full_name}`} value={account.role} disabled={busy} onChange={(e) => updateUser(selected.business.business_id, account.user_id, { role: e.target.value })}><option value="ADMIN">Admin</option><option value="INVENTORY_MANAGER">Inventory manager</option><option value="SALES_STAFF">Sales staff</option></select><button className="platform-action" disabled={busy} onClick={() => updateUser(selected.business.business_id, account.user_id, { isActive: !account.is_active })}>{account.is_active ? "Disable" : "Enable"}</button></div>}</div>)}</div></section>
+          <section className="platform-detail-section"><div className="platform-section-heading"><h3>Recent business activity</h3></div>{selected.activity.length ? <div className="platform-activity-list">{selected.activity.map((item: any, index: number) => <div key={`${item.created_at}-${index}`}><strong>{item.action.replaceAll("_", " ")}</strong><span>{item.entity}{item.full_name ? ` · ${item.full_name}` : ""}</span><time>{ddmmyyyy(item.created_at)}</time></div>)}</div> : <p className="team-help">No recent activity recorded.</p>}</section>
+          <section className="platform-detail-section"><div className="platform-section-heading"><h3>Platform actions</h3></div>{selected.administrationHistory.length ? <div className="platform-activity-list">{selected.administrationHistory.map((item: any) => <div key={item.log_id}><strong>{item.action.replaceAll("_", " ")}</strong><span>{JSON.stringify(item.details)}</span><time>{ddmmyyyy(item.created_at)}</time></div>)}</div> : <p className="team-help">No account changes recorded.</p>}</section>
+        </div>
+      </section></div>}
+    </main>
+  </div>;
 }
 
 function Bars({ data }: { data: { day: string; revenue: number }[] }) {

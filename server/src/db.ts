@@ -29,3 +29,19 @@ export async function withTenant<T>(businessId: string, fn: (c: PoolClient) => P
     client.release();
   }
 }
+
+export async function withPlatformAdmin<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.platform_admin', 'true', true)");
+    const out = await fn(client);
+    await client.query("COMMIT");
+    return out;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}

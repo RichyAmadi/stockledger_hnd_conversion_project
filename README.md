@@ -15,6 +15,7 @@ psql -U postgres -d sims -f server/db/003_subscription_tiers.sql
 psql -U postgres -d sims -f server/db/004_business_logos.sql
 psql -U postgres -d sims -f server/db/005_hosted_auth_lookup.sql
 psql -U postgres -d sims -f server/db/006_crm_complaints.sql
+psql -U postgres -d sims -f server/db/007_platform_admin.sql
 
 cd web
 npm ci
@@ -114,6 +115,10 @@ npm test
 
 ## Deploying to Render
 
-The root `render.yaml` defines a Render web service and a managed PostgreSQL database. The web service builds both packages, applies numbered SQL migrations at startup, and serves the frontend and API from one URL. To deploy, push the repository to GitHub, create a **Blueprint** in the Render dashboard, and select this repository. Render will prompt for `PAYSTACK_SECRET_KEY`; enter the key in Render's secret field, not in this repository. `JWT_SECRET` is generated automatically.
+The root `render.yaml` defines a Render web service and a managed PostgreSQL database. The web service builds both packages, applies numbered SQL migrations at startup, and serves the frontend and API from one URL. To deploy, push the repository to GitHub, create a **Blueprint** in the Render dashboard, and select this repository. Render will prompt for `PAYSTACK_SECRET_KEY`; enter the key in Render's secret field, not in this repository. `JWT_SECRET` and `PLATFORM_ADMIN_JWT_SECRET` are generated automatically.
 
 The Blueprint uses Render's free plans. The web service may sleep when idle, and free PostgreSQL databases are temporary; upgrade the service and database plans for persistent production use before storing real business data.
+
+## Platform administration
+
+The platform dashboard uses a separate platform-admin identity and JWT, not a business owner's tenant login. Set `PLATFORM_ADMIN_EMAIL` and a unique `PLATFORM_ADMIN_PASSWORD` (at least 12 characters) in the Render service environment before first platform-admin sign-in. On an empty admin table the service creates that first account once; changing these variables later does not create additional administrators or rotate an existing password. For password rotation, update the platform-admin record through an approved database maintenance procedure. Keep the bootstrap values in Render secrets, never in Git. Use **Platform administrator** from the sign-in screen to open the business directory. Platform admins can review business activity/subscriptions, suspend or reactivate business access, and manage non-owner team roles and access. Owner roles cannot be changed from the platform dashboard.
